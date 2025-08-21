@@ -4,11 +4,15 @@ console.log("app.js cargado ✅");
 // --- rutas para fallback ---
 const DIRECT_API = "https://api.mangadex.org";
 const CORS_PROXIES = [
+  // 1) proxy simple y rápido
   "https://cors.isomorphic-git.org/",
-  "https://r.jina.ai/http/"
+  // 2) proxy que devuelve texto (hacemos JSON.parse manual)
+  "https://r.jina.ai/http/",
+  // 3) proxy tipo "raw?url="
+  "https://api.allorigins.win/raw?url=",
+  // 4) proxy alterno
+  "https://thingproxy.freeboard.io/fetch/"
 ];
-// Usamos la constante API para construir URLs si la necesitas en otros lados:
-const API = DIRECT_API;
 
 const UPLOADS = "https://uploads.mangadex.org";
 const PAGE_SIZE = 24;
@@ -19,7 +23,6 @@ const el = (s) => document.querySelector(s);
 const els = (s) => Array.from(document.querySelectorAll(s));
 const fmt = new Intl.DateTimeFormat("es", { dateStyle: "medium" });
 
-// Estado global
 const state = {
   search: { q: "", lang: "en", page: 1, total: 0 },
   currentManga: null,
@@ -27,7 +30,6 @@ const state = {
   reader: { mangaTitle: "", chapterId: null, pages: [], index: 0, chapterList: [], chapterPos: -1 }
 };
 
-// ========== Helpers ==========
 function setStatus(msg, kind = "ok") {
   const bar = el("#statusBar");
   if (!bar) return;
@@ -37,36 +39,69 @@ function setStatus(msg, kind = "ok") {
   bar.className = "status " + (kind === "error" ? "error" : "ok");
 }
 
-// API con fallback por proxy si falla la directa
-async function api(path, params = {}) {
-  const buildUrl = (base) => {
-    const url = new URL(base + path);
-    Object.entries(params).forEach(([k, v]) => {
-      if (Array.isArray(v)) v.forEach((val) => url.searchParams.append(k, val));
-      else if (v !== undefined && v !== null) url.searchParams.set(k, v);
-    });
-    return url.toString();
-  };
-
-  const directUrl = buildUrl(DIRECT_API);
-
-  // 1) intento directo
+// Fetch con timeout
+async function fetchWithTimeout(url, opts = {}, ms = 12000) {
+  const c = new AbortController();
+  const id = setTimeout(() => c.abort(), ms);
   try {
-    const res = await fetch(directUrl, { cache: "no-store" });
+    const res = await fetch(url, { ...opts, signal: c.signal, cache: "no-store" });
+    return res;
+  } finally {
+    clearTimeout(id);
+  }
+}
+
+// Construye URL con params
+function buildUrl(base, path, params = {}) {
+  const url = new URL(base + path);
+  Object.entries(params).forEach(([k, v]) => {
+    if (Array.isArray(v)) v.forEach((val) => url.searchParams.append(k, val));
+    else if (v !== undefined && v !== null) url.searchParams.set(k, v);
+  });
+  return url.toString();
+}
+
+// Intenta parsear JSON aunque el proxy devuelva text/plain
+async function parseMaybeJSON(res) {
+  const ct = res.headers.get("content-type") || "";
+  if (ct.includes("application/json")) return res.json();
+  const txt = await res.text();
+  try { return JSON.parse(txt); } catch { throw new Error("Respuesta no-JSON del proxy"); }
+}
+
+// API con fallback múltiple
+async function api(path, params = {}) {
+  const directUrl = buildUrl(DIRECT_API, path, params);
+
+  // 1) Directo
+  try {
+    const res = await fetchWithTimeout(directUrl);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
   } catch (e1) {
-    console.warn("Fallo directo, probando proxies…", e1);
+    console.warn("Fallo directo:", e1);
     setStatus("Conectando (modo compatible)…", "ok");
   }
 
-  // 2) reintentos por proxies
+  // 2) Proxies (varios formatos)
   for (const proxy of CORS_PROXIES) {
     try {
-      const proxiedUrl = proxy.endsWith("/") ? proxy + directUrl : proxy + "/" + directUrl;
-      const res = await fetch(proxiedUrl, { cache: "no-store" });
+      let proxiedUrl;
+      if (proxy.endsWith("raw?url=")) {
+        proxiedUrl = proxy + encodeURIComponent(directUrl);
+      } else if (proxy.endsWith("/http/")) {
+        // r.jina.ai/http/ + URL completa
+        proxiedUrl = proxy + directUrl;
+      } else if (proxy.endsWith("/")) {
+        proxiedUrl = proxy + directUrl;
+      } else {
+        proxiedUrl = proxy + "/" + directUrl;
+      }
+
+      const res = await fetchWithTimeout(proxiedUrl);
       if (!res.ok) throw new Error(`Proxy ${proxy} → HTTP ${res.status}`);
-      const data = await res.json();
+
+      const data = await parseMaybeJSON(res);
       console.info("Usando proxy:", proxy);
       return data;
     } catch (e2) {
@@ -98,7 +133,6 @@ function statusOf(manga) {
   return (manga.attributes?.status || "—").replace(/_/g, " ");
 }
 
-// ========== Render ==========
 function setResultsLoading(isLoading) {
   const grid = el("#resultsGrid");
   if (!grid) return;
@@ -132,7 +166,6 @@ function renderResults(resp, page) {
     grid.appendChild(tpl);
   });
 
-  // Paginación
   const total = resp.total || 0;
   const limit = resp.limit || PAGE_SIZE;
   const lastPage = Math.max(1, Math.ceil(total / limit));
@@ -170,10 +203,8 @@ function renderMangaDetailsHTML(manga) {
   `;
 }
 
-// ========== Acciones ==========
 async function searchManga() {
   const { q, page } = state.search;
-
   const params = {
     title: q,
     limit: PAGE_SIZE,
@@ -317,7 +348,6 @@ async function toChapter(offset) {
   await openReader(list[pos]);
 }
 
-// ========== Eventos ==========
 window.addEventListener("DOMContentLoaded", () => {
   el("#searchForm")?.addEventListener("submit", (e) => {
     e.preventDefault();
