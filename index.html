@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>MangaDex — Lector Personal</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="preconnect" href="https://uploads.mangadex.org" crossorigin>
+</head>
+<body>
+  <header class="topbar">
+    <h1 class="logo">MangaDex • Lector</h1>
+
+    <form id="searchForm" class="search">
+      <input id="searchInput" type="search" placeholder="Buscar manga por título…" autocomplete="off" />
+      <select id="langSelect" title="Idioma de capítulos">
+        <option value="es-la">Español (LatAm)</option>
+        <option value="es">Español</option>
+        <option value="en" selected>Inglés</option>
+        <option value="pt-br">Portugués (BR)</option>
+        <option value="fr">Francés</option>
+      </select>
+      <button type="submit">Buscar</button>
+    </form>
+  </header>
+
+  <div id="statusBar" class="status" hidden>—</div>
+
+  <main class="container">
+    <aside class="panel" id="detailsPanel" hidden>
+      <button class="back" id="backToResults" title="Volver a resultados">← Volver</button>
+      <div id="mangaDetails"></div>
+      <div id="chaptersPanel" class="chapters">
+        <div class="chapters-head">
+          <h3>Capítulos</h3>
+          <div class="chapters-controls">
+            <label>Orden:
+              <select id="orderSelect">
+                <option value="asc">Ascendente</option>
+                <option value="desc" selected>Descendente</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        <ul id="chaptersList"></ul>
+        <nav class="pager" id="chaptersPager" hidden>
+          <button id="prevChapterPage" disabled>Anterior</button>
+          <span id="chapterPageInfo"></span>
+          <button id="nextChapterPage" disabled>Siguiente</button>
+        </nav>
+      </div>
+    </aside>
+
+    <section class="results" id="resultsSection">
+      <div class="hint">Usa la búsqueda para empezar. Ejemplo: "One Piece", "Berserk", "Naruto".</div>
+      <div id="resultsGrid" class="grid"></div>
+      <nav class="pager" id="searchPager" hidden>
+        <button id="prevSearchPage" disabled>Anterior</button>
+        <span id="searchPageInfo"></span>
+        <button id="nextSearchPage" disabled>Siguiente</button>
+      </nav>
+    </section>
+  </main>
+
+  <dialog id="readerDialog">
+    <div class="reader">
+      <div class="reader-top">
+        <button id="closeReader" class="ghost">✕</button>
+        <div class="reader-meta">
+          <div id="readerTitle" class="reader-title"></div>
+          <div id="readerSub" class="reader-sub"></div>
+        </div>
+        <div class="reader-controls">
+          <button id="prevChapter" title="Capítulo anterior">⟵ Cap</button>
+          <button id="nextChapter" title="Capítulo siguiente">Cap ⟶</button>
+        </div>
+      </div>
+
+      <div id="readerPages" class="pages"></div>
+
+      <div class="reader-bottom">
+        <button id="prevPage">Página anterior</button>
+        <span id="pageInfo">—</span>
+        <button id="nextPage">Página siguiente</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Templates -->
+  <template id="cardTpl">
+    <article class="card">
+      <div class="cover-wrap">
+        <img class="cover" alt="Portada" loading="lazy" />
+      </div>
+      <div class="card-body">
+        <h3 class="title"></h3>
+        <p class="meta"></p>
+        <button class="primary">Ver detalles</button>
+      </div>
+    </article>
+  </template>
+
+  <template id="chapterItemTpl">
+    <li class="chapter-item">
+      <button class="chapter-btn">
+        <span class="chapter-left">
+          <strong class="ch-no"></strong>
+          <span class="ch-title"></span>
+        </span>
+        <span class="ch-right">
+          <span class="ch-group"></span>
+          <span class="ch-date"></span>
+        </span>
+      </button>
+    </li>
+  </template>
+
+  <script src="app.js" defer></script>
+</body>
+</html>
