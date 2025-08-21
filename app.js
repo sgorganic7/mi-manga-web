@@ -4,13 +4,9 @@ console.log("app.js cargado ✅");
 // --- rutas para fallback ---
 const DIRECT_API = "https://api.mangadex.org";
 const CORS_PROXIES = [
-  // 1) proxy simple y rápido
   "https://cors.isomorphic-git.org/",
-  // 2) proxy que devuelve texto (hacemos JSON.parse manual)
   "https://r.jina.ai/http/",
-  // 3) proxy tipo "raw?url="
   "https://api.allorigins.win/raw?url=",
-  // 4) proxy alterno
   "https://thingproxy.freeboard.io/fetch/"
 ];
 
@@ -23,6 +19,7 @@ const el = (s) => document.querySelector(s);
 const els = (s) => Array.from(document.querySelectorAll(s));
 const fmt = new Intl.DateTimeFormat("es", { dateStyle: "medium" });
 
+// Estado global
 const state = {
   search: { q: "", lang: "en", page: 1, total: 0 },
   currentManga: null,
@@ -30,6 +27,7 @@ const state = {
   reader: { mangaTitle: "", chapterId: null, pages: [], index: 0, chapterList: [], chapterPos: -1 }
 };
 
+// ========== Helpers ==========
 function setStatus(msg, kind = "ok") {
   const bar = el("#statusBar");
   if (!bar) return;
@@ -39,19 +37,15 @@ function setStatus(msg, kind = "ok") {
   bar.className = "status " + (kind === "error" ? "error" : "ok");
 }
 
-// Fetch con timeout
 async function fetchWithTimeout(url, opts = {}, ms = 12000) {
   const c = new AbortController();
   const id = setTimeout(() => c.abort(), ms);
   try {
     const res = await fetch(url, { ...opts, signal: c.signal, cache: "no-store" });
     return res;
-  } finally {
-    clearTimeout(id);
-  }
+  } finally { clearTimeout(id); }
 }
 
-// Construye URL con params
 function buildUrl(base, path, params = {}) {
   const url = new URL(base + path);
   Object.entries(params).forEach(([k, v]) => {
@@ -61,7 +55,6 @@ function buildUrl(base, path, params = {}) {
   return url.toString();
 }
 
-// Intenta parsear JSON aunque el proxy devuelva text/plain
 async function parseMaybeJSON(res) {
   const ct = res.headers.get("content-type") || "";
   if (ct.includes("application/json")) return res.json();
@@ -69,11 +62,11 @@ async function parseMaybeJSON(res) {
   try { return JSON.parse(txt); } catch { throw new Error("Respuesta no-JSON del proxy"); }
 }
 
-// API con fallback múltiple
+// ====== API con fallback múltiple ======
 async function api(path, params = {}) {
   const directUrl = buildUrl(DIRECT_API, path, params);
 
-  // 1) Directo
+  // 1) intento directo
   try {
     const res = await fetchWithTimeout(directUrl);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -83,24 +76,21 @@ async function api(path, params = {}) {
     setStatus("Conectando (modo compatible)…", "ok");
   }
 
-  // 2) Proxies (varios formatos)
+  // 2) reintentos por proxies
   for (const proxy of CORS_PROXIES) {
     try {
       let proxiedUrl;
       if (proxy.endsWith("raw?url=")) {
         proxiedUrl = proxy + encodeURIComponent(directUrl);
       } else if (proxy.endsWith("/http/")) {
-        // r.jina.ai/http/ + URL completa
         proxiedUrl = proxy + directUrl;
       } else if (proxy.endsWith("/")) {
         proxiedUrl = proxy + directUrl;
       } else {
         proxiedUrl = proxy + "/" + directUrl;
       }
-
       const res = await fetchWithTimeout(proxiedUrl);
       if (!res.ok) throw new Error(`Proxy ${proxy} → HTTP ${res.status}`);
-
       const data = await parseMaybeJSON(res);
       console.info("Usando proxy:", proxy);
       return data;
@@ -133,6 +123,7 @@ function statusOf(manga) {
   return (manga.attributes?.status || "—").replace(/_/g, " ");
 }
 
+// ========== Render ==========
 function setResultsLoading(isLoading) {
   const grid = el("#resultsGrid");
   if (!grid) return;
@@ -203,6 +194,7 @@ function renderMangaDetailsHTML(manga) {
   `;
 }
 
+// ========== Acciones ==========
 async function searchManga() {
   const { q, page } = state.search;
   const params = {
@@ -305,9 +297,29 @@ async function openReader(chapter) {
     const { baseUrl, chapter: chInfo } = await api(`/at-home/server/${chapter.id}`);
     const hash = chInfo.hash;
     const files = (USE_DATA_SAVER && chInfo.dataSaver?.length) ? chInfo.dataSaver : chInfo.data;
-    const base = `${baseUrl}/${(USE_DATA_SAVER && chInfo.dataSaver?.length) ? "data-saver" : "data"}/${hash}`;
 
-    const pages = files.map((file) => `${base}/${file}`);
+    // URL base directa
+    const baseDirect = `${baseUrl}/${(USE_DATA_SAVER && chInfo.dataSaver?.length) ? "data-saver" : "data"}/${hash}`;
+
+    // Páginas (intentamos directo)
+    let pages = files.map((file) => `${baseDirect}/${file}`);
+
+    // Probamos la primera imagen directa; si falla, cambiamos TODAS por proxy
+    try {
+      const test = await fetchWithTimeout(pages[0], {}, 8000);
+      if (!test.ok) throw new Error("Bloqueo directo");
+    } catch {
+      console.warn("Bloqueo directo de imágenes, usando proxy…");
+      const p = CORS_PROXIES[0] || "";
+      pages = files.map((file) => {
+        // varios estilos de proxy
+        if (p.endsWith("raw?url=")) return p + encodeURIComponent(`${baseDirect}/${file}`);
+        if (p.endsWith("/http/")) return p + `${baseDirect}/${file}`;
+        if (p.endsWith("/")) return p + `${baseDirect}/${file}`;
+        return p + "/" + `${baseDirect}/${file}`;
+      });
+    }
+
     state.reader = {
       mangaTitle: titleOf(state.currentManga),
       chapterId: chapter.id,
@@ -317,6 +329,7 @@ async function openReader(chapter) {
       chapterPos: state.chapters.list.findIndex((c) => c.id === chapter.id)
     };
 
+    // Render lector
     el("#readerTitle").textContent = `${state.reader.mangaTitle}`;
     el("#readerSub").textContent = `Cap. ${chapter.attributes?.chapter || "—"} • ${groupName(chapter) || ""}`;
     const list = el("#readerPages");
@@ -348,6 +361,7 @@ async function toChapter(offset) {
   await openReader(list[pos]);
 }
 
+// ========== Eventos ==========
 window.addEventListener("DOMContentLoaded", () => {
   el("#searchForm")?.addEventListener("submit", (e) => {
     e.preventDefault();
