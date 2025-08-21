@@ -1,4 +1,6 @@
 // ========== Config ==========
+console.log("app.js cargado ✅");
+
 const API = "https://api.mangadex.org";
 const UPLOADS = "https://uploads.mangadex.org";
 const PAGE_SIZE = 24;
@@ -20,25 +22,23 @@ const state = {
 // ========== Helpers ==========
 function setStatus(msg, kind = "ok") {
   const bar = el("#statusBar");
+  if (!bar) return; // por si no existe en tu HTML
   if (!msg) { bar.hidden = true; bar.textContent = ""; bar.className = "status"; return; }
   bar.hidden = false;
   bar.textContent = msg;
   bar.className = "status " + (kind === "error" ? "error" : "ok");
 }
 
-// IMPORTANTE: sin headers en GET (evita preflight CORS desde file://)
+// IMPORTANTE: sin headers en GET (evita preflight)
 async function api(path, params = {}) {
   const url = new URL(API + path);
   Object.entries(params).forEach(([k, v]) => {
     if (Array.isArray(v)) v.forEach((val) => url.searchParams.append(k, val));
     else if (v !== undefined && v !== null) url.searchParams.set(k, v);
   });
-  const res = await fetch(url.toString(), {
-    // No headers; no credentials; cache desactivada para pruebas
-    cache: "no-store",
-  });
+  const res = await fetch(url.toString(), { cache: "no-store" });
   if (!res.ok) {
-    const text = await res.text();
+    const text = await res.text().catch(() => "");
     throw new Error(`HTTP ${res.status} – ${text.slice(0, 200)}`);
   }
   return res.json();
@@ -68,6 +68,7 @@ function statusOf(manga) {
 // ========== Render ==========
 function setResultsLoading(isLoading) {
   const grid = el("#resultsGrid");
+  if (!grid) return;
   if (isLoading) {
     grid.innerHTML = Array.from({ length: 8 })
       .map(() => `<article class="card"><div class="cover-wrap"></div><div class="card-body"><h3 class="title"> </h3><p class="meta"> </p><button class="primary" disabled>Cargando…</button></div></article>`)
@@ -76,6 +77,8 @@ function setResultsLoading(isLoading) {
 }
 function renderResults(resp, page) {
   const grid = el("#resultsGrid");
+  if (!grid) return;
+
   grid.innerHTML = "";
   const data = resp?.data || [];
   if (data.length === 0) {
@@ -104,10 +107,12 @@ function renderResults(resp, page) {
   state.search.total = lastPage;
 
   const pager = el("#searchPager");
-  pager.hidden = lastPage <= 1;
-  el("#prevSearchPage").disabled = page <= 1;
-  el("#nextSearchPage").disabled = page >= lastPage;
-  el("#searchPageInfo").textContent = `Página ${page} de ${lastPage}`;
+  if (pager) {
+    pager.hidden = lastPage <= 1;
+    el("#prevSearchPage").disabled = page <= 1;
+    el("#nextSearchPage").disabled = page >= lastPage;
+    el("#searchPageInfo").textContent = `Página ${page} de ${lastPage}`;
+  }
 }
 
 function renderMangaDetailsHTML(manga) {
@@ -137,7 +142,7 @@ function renderMangaDetailsHTML(manga) {
 async function searchManga() {
   const { q, page } = state.search;
 
-  // Sin filtro de idioma aquí
+  // Sin filtrar por idioma aquí
   const params = {
     title: q,
     limit: PAGE_SIZE,
@@ -149,12 +154,14 @@ async function searchManga() {
   setResultsLoading(true);
   try {
     const resp = await api("/manga", params);
-    el("#resultsSection .hint").hidden = true;
+    const hint = el("#resultsSection .hint");
+    if (hint) hint.hidden = true;
     renderResults(resp, page);
     setStatus(`Resultados para "${q}"`, "ok");
   } catch (e) {
     console.error(e);
-    el("#resultsGrid").innerHTML = `<div class="hint">Error al buscar: ${e.message}</div>`;
+    const grid = el("#resultsGrid");
+    if (grid) grid.innerHTML = `<div class="hint">Error al buscar: ${e.message}</div>`;
     setStatus("Error en la búsqueda: " + e.message, "error");
   } finally {
     setResultsLoading(false);
@@ -163,4 +170,192 @@ async function searchManga() {
 
 async function openDetails(manga) {
   state.currentManga = manga;
-  state.chapters = { order: el("#orde
+  state.chapters = { order: el("#orderSelect")?.value || "desc", page: 1, total: 0, list: [] };
+
+  el("#detailsPanel").hidden = false;
+  el("#resultsSection").style.display = "none";
+
+  el("#mangaDetails").innerHTML = renderMangaDetailsHTML(manga);
+  await loadChapters();
+}
+
+async function loadChapters() {
+  const manga = state.currentManga;
+  const { order, page } = state.chapters;
+  const lang = state.search.lang;
+
+  const params = {
+    manga: manga.id,
+    translatedLanguage: [lang],
+    limit: CH_PAGE_SIZE,
+    offset: (page - 1) * CH_PAGE_SIZE,
+    "order[chapter]": order,
+    "includes[]": ["scanlation_group", "user"]
+  };
+
+  const listEl = el("#chaptersList");
+  if (listEl) listEl.innerHTML = `<li class="hint">Cargando capítulos…</li>`;
+  setStatus("Cargando capítulos…");
+
+  try {
+    const resp = await api("/chapter", params);
+    const total = resp.total || 0;
+    const last = Math.max(1, Math.ceil(total / CH_PAGE_SIZE));
+    state.chapters.total = last;
+    state.chapters.list = resp.data || [];
+
+    if (listEl) listEl.innerHTML = "";
+    (resp.data || []).forEach((ch) => {
+      const tpl = el("#chapterItemTpl").content.cloneNode(true);
+      tpl.querySelector(".ch-no").textContent = `Cap. ${ch.attributes?.chapter || "—"}`;
+      tpl.querySelector(".ch-title").textContent = ch.attributes?.title || "";
+      tpl.querySelector(".ch-group").textContent = groupName(ch);
+      const d = ch.attributes?.publishAt || ch.attributes?.readableAt || ch.attributes?.createdAt;
+      tpl.querySelector(".ch-date").textContent = d ? fmt.format(new Date(d)) : "";
+      tpl.querySelector(".chapter-btn").addEventListener("click", () => openReader(ch));
+      listEl.appendChild(tpl);
+    });
+
+    // Pager
+    const pager = el("#chaptersPager");
+    if (pager) {
+      pager.hidden = last <= 1;
+      el("#prevChapterPage").disabled = page <= 1;
+      el("#nextChapterPage").disabled = page >= last;
+      el("#chapterPageInfo").textContent = `Página ${page} de ${last}`;
+    }
+
+    setStatus(`Capítulos en ${lang?.toUpperCase?.() || lang} cargados (${resp.data?.length || 0})`, "ok");
+  } catch (e) {
+    console.error(e);
+    if (listEl) listEl.innerHTML = `<li class="hint">Error cargando capítulos: ${e.message}</li>`;
+    setStatus("Error al cargar capítulos: " + e.message, "error");
+  }
+}
+
+function groupName(ch) {
+  const rel = (ch.relationships || []).find((r) => r.type === "scanlation_group");
+  return rel?.attributes?.name || "—";
+}
+
+async function openReader(chapter) {
+  try {
+    setStatus("Abriendo capítulo…");
+    const { baseUrl, chapter: chInfo } = await api(`/at-home/server/${chapter.id}`);
+    const hash = chInfo.hash;
+    const files = (USE_DATA_SAVER && chInfo.dataSaver?.length) ? chInfo.dataSaver : chInfo.data;
+    const base = `${baseUrl}/${(USE_DATA_SAVER && chInfo.dataSaver?.length) ? "data-saver" : "data"}/${hash}`;
+
+    const pages = files.map((file) => `${base}/${file}`);
+    state.reader = {
+      mangaTitle: titleOf(state.currentManga),
+      chapterId: chapter.id,
+      pages,
+      index: 0,
+      chapterList: state.chapters.list.slice(),
+      chapterPos: state.chapters.list.findIndex((c) => c.id === chapter.id)
+    };
+
+    // Render lector
+    el("#readerTitle").textContent = `${state.reader.mangaTitle}`;
+    el("#readerSub").textContent = `Cap. ${chapter.attributes?.chapter || "—"} • ${groupName(chapter) || ""}`;
+    const list = el("#readerPages");
+    list.innerHTML = pages.map((src, i) => `<img src="${src}" alt="Página ${i + 1}" data-index="${i}" loading="${i < 2 ? "eager" : "lazy"}">`).join("");
+    el("#pageInfo").textContent = `1 / ${pages.length}`;
+    el("#readerDialog").showModal();
+    el("#readerPages").scrollTo({ top: 0, behavior: "instant" });
+    setStatus("");
+  } catch (e) {
+    console.error(e);
+    setStatus("No se pudo abrir el capítulo: " + e.message, "error");
+    alert("No se pudo abrir el capítulo: " + e.message);
+  }
+}
+
+function toPage(delta) {
+  const r = state.reader;
+  if (!r.pages.length) return;
+  r.index = Math.min(Math.max(0, r.index + delta), r.pages.length - 1);
+  const target = el(`#readerPages img[data-index="${r.index}"]`);
+  if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+  el("#pageInfo").textContent = `${r.index + 1} / ${r.pages.length}`;
+}
+
+async function toChapter(offset) {
+  const pos = state.reader.chapterPos + offset;
+  const list = state.reader.chapterList;
+  if (pos < 0 || pos >= list.length) return;
+  await openReader(list[pos]);
+}
+
+// ========== Eventos ==========
+window.addEventListener("DOMContentLoaded", () => {
+  // Búsqueda
+  el("#searchForm")?.addEventListener("submit", (e) => {
+    e.preventDefault();
+    state.search.q = el("#searchInput")?.value.trim() || "";
+    state.search.page = 1;
+    if (!state.search.q) { setStatus("Escribe un título para buscar.", "error"); return; }
+    searchManga();
+  });
+
+  // Idioma de capítulos
+  el("#langSelect")?.addEventListener("change", () => {
+    state.search.lang = el("#langSelect").value;
+    if (!el("#detailsPanel")?.hidden && state.currentManga) {
+      state.chapters.page = 1;
+      loadChapters();
+    }
+  });
+  // set default lang (si existe)
+  if (el("#langSelect")) state.search.lang = el("#langSelect").value;
+
+  // Paginación de búsqueda
+  el("#prevSearchPage")?.addEventListener("click", () => {
+    if (state.search.page > 1) { state.search.page--; searchManga(); }
+  });
+  el("#nextSearchPage")?.addEventListener("click", () => {
+    if (state.search.page < state.search.total) { state.search.page++; searchManga(); }
+  });
+
+  // Volver a resultados
+  el("#backToResults")?.addEventListener("click", () => {
+    el("#detailsPanel").hidden = true;
+    el("#resultsSection").style.display = "";
+    setStatus("");
+  });
+
+  // Orden y paginación de capítulos
+  el("#orderSelect")?.addEventListener("change", () => {
+    state.chapters.order = el("#orderSelect").value;
+    state.chapters.page = 1;
+    loadChapters();
+  });
+  el("#prevChapterPage")?.addEventListener("click", () => {
+    if (state.chapters.page > 1) { state.chapters.page--; loadChapters(); }
+  });
+  el("#nextChapterPage")?.addEventListener("click", () => {
+    if (state.chapters.page < state.chapters.total) { state.chapters.page++; loadChapters(); }
+  });
+
+  // Lector
+  el("#closeReader")?.addEventListener("click", () => el("#readerDialog").close());
+  el("#prevPage")?.addEventListener("click", () => toPage(-1));
+  el("#nextPage")?.addEventListener("click", () => toPage(1));
+  el("#prevChapter")?.addEventListener("click", () => toChapter(-1));
+  el("#nextChapter")?.addEventListener("click", () => toChapter(1));
+
+  // Indicador de página durante scroll
+  el("#readerPages")?.addEventListener("scroll", () => {
+    const images = els("#readerPages img");
+    const top = el("#readerPages").scrollTop;
+    const viewport = el("#readerPages").clientHeight;
+    let current = 0;
+    images.forEach((img, i) => {
+      const y = img.offsetTop;
+      if (y <= top + viewport * 0.4) current = i;
+    });
+    state.reader.index = current;
+    el("#pageInfo").textContent = `${current + 1} / ${images.length}`;
+  });
+});
