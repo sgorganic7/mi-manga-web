@@ -1,7 +1,15 @@
 // ========== Config ==========
 console.log("app.js cargado ✅");
 
-const API = "https://api.mangadex.org";
+// --- rutas para fallback ---
+const DIRECT_API = "https://api.mangadex.org";
+const CORS_PROXIES = [
+  "https://cors.isomorphic-git.org/",
+  "https://r.jina.ai/http/"
+];
+// Usamos la constante API para construir URLs si la necesitas en otros lados:
+const API = DIRECT_API;
+
 const UPLOADS = "https://uploads.mangadex.org";
 const PAGE_SIZE = 24;
 const CH_PAGE_SIZE = 50;
@@ -22,26 +30,51 @@ const state = {
 // ========== Helpers ==========
 function setStatus(msg, kind = "ok") {
   const bar = el("#statusBar");
-  if (!bar) return; // por si no existe en tu HTML
+  if (!bar) return;
   if (!msg) { bar.hidden = true; bar.textContent = ""; bar.className = "status"; return; }
   bar.hidden = false;
   bar.textContent = msg;
   bar.className = "status " + (kind === "error" ? "error" : "ok");
 }
 
-// IMPORTANTE: sin headers en GET (evita preflight)
+// API con fallback por proxy si falla la directa
 async function api(path, params = {}) {
-  const url = new URL(API + path);
-  Object.entries(params).forEach(([k, v]) => {
-    if (Array.isArray(v)) v.forEach((val) => url.searchParams.append(k, val));
-    else if (v !== undefined && v !== null) url.searchParams.set(k, v);
-  });
-  const res = await fetch(url.toString(), { cache: "no-store" });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status} – ${text.slice(0, 200)}`);
+  const buildUrl = (base) => {
+    const url = new URL(base + path);
+    Object.entries(params).forEach(([k, v]) => {
+      if (Array.isArray(v)) v.forEach((val) => url.searchParams.append(k, val));
+      else if (v !== undefined && v !== null) url.searchParams.set(k, v);
+    });
+    return url.toString();
+  };
+
+  const directUrl = buildUrl(DIRECT_API);
+
+  // 1) intento directo
+  try {
+    const res = await fetch(directUrl, { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch (e1) {
+    console.warn("Fallo directo, probando proxies…", e1);
+    setStatus("Conectando (modo compatible)…", "ok");
   }
-  return res.json();
+
+  // 2) reintentos por proxies
+  for (const proxy of CORS_PROXIES) {
+    try {
+      const proxiedUrl = proxy.endsWith("/") ? proxy + directUrl : proxy + "/" + directUrl;
+      const res = await fetch(proxiedUrl, { cache: "no-store" });
+      if (!res.ok) throw new Error(`Proxy ${proxy} → HTTP ${res.status}`);
+      const data = await res.json();
+      console.info("Usando proxy:", proxy);
+      return data;
+    } catch (e2) {
+      console.warn("Proxy falló:", proxy, e2);
+    }
+  }
+
+  throw new Error("No se pudo conectar (directo ni proxies). Revisa red/DNS/extensiones.");
 }
 
 function coverUrl(manga) {
@@ -78,7 +111,6 @@ function setResultsLoading(isLoading) {
 function renderResults(resp, page) {
   const grid = el("#resultsGrid");
   if (!grid) return;
-
   grid.innerHTML = "";
   const data = resp?.data || [];
   if (data.length === 0) {
@@ -142,7 +174,6 @@ function renderMangaDetailsHTML(manga) {
 async function searchManga() {
   const { q, page } = state.search;
 
-  // Sin filtrar por idioma aquí
   const params = {
     title: q,
     limit: PAGE_SIZE,
@@ -216,7 +247,6 @@ async function loadChapters() {
       listEl.appendChild(tpl);
     });
 
-    // Pager
     const pager = el("#chaptersPager");
     if (pager) {
       pager.hidden = last <= 1;
@@ -256,7 +286,6 @@ async function openReader(chapter) {
       chapterPos: state.chapters.list.findIndex((c) => c.id === chapter.id)
     };
 
-    // Render lector
     el("#readerTitle").textContent = `${state.reader.mangaTitle}`;
     el("#readerSub").textContent = `Cap. ${chapter.attributes?.chapter || "—"} • ${groupName(chapter) || ""}`;
     const list = el("#readerPages");
@@ -290,7 +319,6 @@ async function toChapter(offset) {
 
 // ========== Eventos ==========
 window.addEventListener("DOMContentLoaded", () => {
-  // Búsqueda
   el("#searchForm")?.addEventListener("submit", (e) => {
     e.preventDefault();
     state.search.q = el("#searchInput")?.value.trim() || "";
@@ -299,7 +327,6 @@ window.addEventListener("DOMContentLoaded", () => {
     searchManga();
   });
 
-  // Idioma de capítulos
   el("#langSelect")?.addEventListener("change", () => {
     state.search.lang = el("#langSelect").value;
     if (!el("#detailsPanel")?.hidden && state.currentManga) {
@@ -307,10 +334,8 @@ window.addEventListener("DOMContentLoaded", () => {
       loadChapters();
     }
   });
-  // set default lang (si existe)
   if (el("#langSelect")) state.search.lang = el("#langSelect").value;
 
-  // Paginación de búsqueda
   el("#prevSearchPage")?.addEventListener("click", () => {
     if (state.search.page > 1) { state.search.page--; searchManga(); }
   });
@@ -318,14 +343,12 @@ window.addEventListener("DOMContentLoaded", () => {
     if (state.search.page < state.search.total) { state.search.page++; searchManga(); }
   });
 
-  // Volver a resultados
   el("#backToResults")?.addEventListener("click", () => {
     el("#detailsPanel").hidden = true;
     el("#resultsSection").style.display = "";
     setStatus("");
   });
 
-  // Orden y paginación de capítulos
   el("#orderSelect")?.addEventListener("change", () => {
     state.chapters.order = el("#orderSelect").value;
     state.chapters.page = 1;
@@ -338,14 +361,12 @@ window.addEventListener("DOMContentLoaded", () => {
     if (state.chapters.page < state.chapters.total) { state.chapters.page++; loadChapters(); }
   });
 
-  // Lector
   el("#closeReader")?.addEventListener("click", () => el("#readerDialog").close());
   el("#prevPage")?.addEventListener("click", () => toPage(-1));
   el("#nextPage")?.addEventListener("click", () => toPage(1));
   el("#prevChapter")?.addEventListener("click", () => toChapter(-1));
   el("#nextChapter")?.addEventListener("click", () => toChapter(1));
 
-  // Indicador de página durante scroll
   el("#readerPages")?.addEventListener("scroll", () => {
     const images = els("#readerPages img");
     const top = el("#readerPages").scrollTop;
